@@ -260,6 +260,19 @@ fn follow_cell(
             })
         });
         let Some((j, t)) = next else { break };
+        // Two cells of one line both under the opening fragment: it is a
+        // title spanning columns, not a cell.
+        let (first_lo, first_hi) = (first.x, first.x + first.width.max(0.0));
+        let under = lines[j]
+            .spans
+            .iter()
+            .filter(|sp| {
+                !sp.text.trim().is_empty() && sp.x < first_hi && sp.x + sp.width.max(0.0) > first_lo
+            })
+            .count();
+        if under >= 2 {
+            return None;
+        }
         let sp = &lines[j].spans[t];
         end = sp.stream_order.map_or(end, |(_, b)| b);
         lo = lo.min(sp.x);
@@ -475,6 +488,17 @@ mod tests {
             &[("23%", 40.0, 0), ("12%", 200.0, 3)],
             &[("Graduated from", 40.0, 1), ("Transferred to", 200.0, 4)],
             &[("Any College", 40.0, 2), ("Another Institution", 200.0, 5)],
+        ]);
+        assert!(merge_stream_wrapped_cells(&lines).is_none());
+    }
+
+    #[test]
+    fn a_title_over_a_small_table_is_not_a_cell() {
+        let lines = ordered_lines(&[
+            &[("Coverage D Increased Limit (Loss of Use)", 60.0, 0)],
+            &[("All Forms", 60.0, 1)],
+            &[("Per", 120.0, 2), ("Rate", 200.0, 3)],
+            &[("$1,000", 120.0, 4), ("$2.66", 200.0, 5)],
         ]);
         assert!(merge_stream_wrapped_cells(&lines).is_none());
     }

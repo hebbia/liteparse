@@ -615,6 +615,18 @@ fn try_detect_stacked_cell_table(lines: &[ProjectedLine], start: usize) -> Optio
     if min_gap < pitch * STACKED_MIN_ROW_GAP_PITCH_MULT || tall_rows * 2 < row_spans.len() {
         return None;
     }
+    // Every column stacking the same number of lines means each line is its
+    // own record (a dense table grouped by section gaps), not wrapped cells.
+    let records_merged = row_spans.iter().any(|(_, _, members)| {
+        let mut per_column = vec![0usize; column_count];
+        for &ci in members {
+            per_column[chains[ci].0] += chains[ci].3.len();
+        }
+        per_column[0] >= 2 && per_column.iter().all(|&n| n == per_column[0])
+    });
+    if records_merged {
+        return None;
+    }
 
     let rows: Vec<Vec<Cell>> = row_spans
         .iter()
@@ -5569,6 +5581,14 @@ mod tests {
         let row_refs: Vec<&[(&str, f32)]> = rows.iter().map(|r| r.as_slice()).collect();
         let grouped: Vec<&[&[(&str, f32)]]> = row_refs.chunks(1).collect();
         let lines = stacked_rows(&grouped, 12.0, 22.0);
+        assert!(try_detect_stacked_cell_table(&lines, 0).is_none());
+    }
+
+    #[test]
+    fn dense_rows_grouped_by_section_gaps_are_not_stacked_cells() {
+        let full: &[(&str, f32)] = &[("Teachers", 40.0), ("53.0", 200.0), ("73.6%", 360.0)];
+        let block: &[&[(&str, f32)]] = &[full, full, full];
+        let lines = stacked_rows(&[block, block, block], 12.0, 24.0);
         assert!(try_detect_stacked_cell_table(&lines, 0).is_none());
     }
 

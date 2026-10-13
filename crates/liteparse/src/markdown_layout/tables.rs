@@ -1695,36 +1695,11 @@ fn try_detect_table(lines: &[ProjectedLine], start_idx: usize, floor: usize) -> 
                 continue;
             }
         }
-        // If the row has *more* cells than column_count, it likely picked up
-        // content from an adjacent page column that the projection placed on
-        // the same line (e.g. left-table-row + right-column body text). Try
-        // to recover by keeping only the cells whose center lands inside one
-        // of our established column tracks; drop the rest.
-        if cells.len() > column_count {
-            let kept: Vec<TableCell> = cells
-                .iter()
-                .filter(|c| match_track_idx(c, &track_ranges).is_some())
-                .cloned()
-                .collect();
-            // Only cells sitting entirely outside the table's x-extent can be
-            // foreign page-column bleed. A cell that lands *between* two
-            // established tracks is in-table content, so discarding it would
-            // silently lose document text — break the run instead and let the
-            // wider row seed its own table.
-            let first_track_x = track_ranges
-                .first()
-                .map(|r| r.0)
-                .unwrap_or(f32::NEG_INFINITY);
-            let extras_all_outside = cells
-                .iter()
-                .filter(|c| match_track_idx(c, &track_ranges).is_none())
-                .all(|c| c.end_x < first_track_x || c.start_x > tracks_right_edge);
-            if kept.len() == column_count && extras_all_outside {
-                cells = kept;
-            } else {
-                break;
-            }
-        }
+        // A row with *more* cells than the table has columns ends the run.
+        // The extras may be an adjacent page column's text on the same line,
+        // or the table's own label column when the header that seeded the
+        // tracks left it out; dropping them would silently lose text either
+        // way, so the wider row is left to seed its own table or paragraph.
         if cells.len() != column_count {
             break;
         }

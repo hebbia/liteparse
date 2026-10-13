@@ -18,6 +18,17 @@ const TABLE_CELL_GAP_FONT_MULTIPLIER: f32 = 1.0;
 /// a wrapped table header rather than prose.
 const WRAPPED_CELL_MAX_WORDS: usize = 6;
 
+/// `try_detect_stacked_cell_table`: largest line-to-line drop, in font sizes,
+/// that still belongs to the same table region.
+const STACKED_MAX_LINE_GAP_FONT_MULT: f32 = 3.0;
+/// Lines of one column at most this many pitches apart share a cell.
+const STACKED_CHAIN_PITCH_MULT: f32 = 1.35;
+/// Gap between logical rows, in line pitches, below which row boundaries are
+/// too ambiguous to regroup lines.
+const STACKED_MIN_ROW_GAP_PITCH_MULT: f32 = 1.5;
+const STACKED_MIN_LINES: usize = 6;
+const STACKED_MIN_ROWS: usize = 3;
+
 /// Tolerance (points) for matching a cell's start-x to an existing column
 /// track when extending a candidate table run.
 const TABLE_TRACK_TOLERANCE_PT: f32 = 6.0;
@@ -462,6 +473,191 @@ pub(super) fn fold_wrapped_cell_row(
         end += 1;
     }
     (end > start + 1).then_some((texts, end))
+}
+
+/// Borderless table whose rows are several lines tall in most columns at
+/// once (comparison matrices, term sheets). The line-per-row detectors split
+/// such a row into one table row per visual line and drop the vertically
+/// centred row labels between runs. Columns here are the x-intervals the
+/// region's cells occupy; rows are the vertical extents of each column's
+/// tightly stacked lines, unioned across columns. Only fires when the region
+/// has tall rows separated by clearly larger gaps than the line pitch, so
+/// line-per-row tables keep going through the existing detectors.
+fn try_detect_stacked_cell_table(lines: &[ProjectedLine], start: usize) -> Option<TableRun> {
+    let first = &lines[start];
+    if first.all_mono || first.rtl {
+        return None;
+    }
+    let first_cells = gutter_cells(first);
+    if first_cells.len() < TABLE_MIN_COLUMNS {
+        return None;
+    }
+    let column_count = first_cells.len();
+    let mut columns: Vec<(f32, f32)> = first_cells.iter().map(|c| (c.start_x, c.end_x)).collect();
+    let font = first.dominant_font_size.max(first.bbox.height).max(1.0);
+
+    let mut entries: Vec<(usize, usize, TableCell)> = first_cells
+        .into_iter()
+        .enumerate()
+        .map(|(j, c)| (start, j, c))
+        .collect();
+    let mut prev_y = first.bbox.y;
+    let mut end = start + 1;
+    while end < lines.len() {
+        let line = &lines[end];
+        if line.all_mono || line.rtl || line.bbox.y - prev_y > font * STACKED_MAX_LINE_GAP_FONT_MULT
+        {
+            break;
+        }
+        let cells = gutter_cells(line);
+        if cells.is_empty() {
+            break;
+        }
+        let mut grown = columns.clone();
+        let mut placed = Vec::with_capacity(cells.len());
+        for c in &cells {
+            let hits: Vec<usize> = (0..grown.len())
+                .filter(|&j| c.start_x < grown[j].1 && c.end_x > grown[j].0)
+                .collect();
+            let j = match hits.as_slice() {
+                [j] => *j,
+                [] => match grown.iter().position(|&(s, _)| s > c.end_x) {
+                    Some(j) if j > 0 && c.start_x > grown[j - 1].1 => j - 1,
+                    Some(0) => 0,
+                    None => grown.len() - 1,
+                    _ => break,
+                },
+                _ => break,
+            };
+            let lo = if j > 0 {
+                grown[j - 1].1
+            } else {
+                f32::NEG_INFINITY
+            };
+            let hi = grown.get(j + 1).map_or(f32::INFINITY, |n| n.0);
+            if c.start_x <= lo || c.end_x >= hi {
+                break;
+            }
+            grown[j] = (grown[j].0.min(c.start_x), grown[j].1.max(c.end_x));
+            placed.push(j);
+        }
+        if placed.len() != cells.len() || placed.windows(2).any(|w| w[0] >= w[1]) {
+            break;
+        }
+        columns = grown;
+        entries.extend(cells.into_iter().zip(placed).map(|(c, j)| (end, j, c)));
+        prev_y = line.bbox.y;
+        end += 1;
+    }
+    if end - start < STACKED_MIN_LINES {
+        return None;
+    }
+
+    let mut per_col: Vec<Vec<usize>> = vec![Vec::new(); column_count];
+    for (k, (_, j, _)) in entries.iter().enumerate() {
+        per_col[*j].push(k);
+    }
+    let y_of = |k: usize| lines[entries[k].0].bbox.y;
+    let mut pitches: Vec<f32> = per_col
+        .iter()
+        .flat_map(|ks| ks.windows(2).map(|w| y_of(w[1]) - y_of(w[0])))
+        .filter(|&dy| dy > 0.0 && dy <= font * STACKED_MAX_LINE_GAP_FONT_MULT)
+        .collect();
+    if pitches.len() < 2 {
+        return None;
+    }
+    pitches.sort_by(|a, b| a.total_cmp(b));
+    let pitch = pitches[pitches.len() / 2];
+
+    // Chains: runs of a column's entries stacked at about one line pitch.
+    let mut chains: Vec<(usize, f32, f32, Vec<usize>)> = Vec::new();
+    for (j, ks) in per_col.iter().enumerate() {
+        for &k in ks {
+            match chains.last_mut() {
+                Some((cj, _, hi, members))
+                    if *cj == j && y_of(k) - *hi <= pitch * STACKED_CHAIN_PITCH_MULT =>
+                {
+                    *hi = y_of(k);
+                    members.push(k);
+                }
+                _ => chains.push((j, y_of(k), y_of(k), vec![k])),
+            }
+        }
+    }
+    chains.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut row_spans: Vec<(f32, f32, Vec<usize>)> = Vec::new();
+    for (ci, (_, lo, hi, _)) in chains.iter().enumerate() {
+        match row_spans.last_mut() {
+            Some((_, rhi, members)) if *lo <= *rhi + pitch * 0.5 => {
+                *rhi = rhi.max(*hi);
+                members.push(ci);
+            }
+            _ => row_spans.push((*lo, *hi, vec![ci])),
+        }
+    }
+    if row_spans.len() < STACKED_MIN_ROWS {
+        return None;
+    }
+    let min_gap = row_spans
+        .windows(2)
+        .map(|w| w[1].0 - w[0].1)
+        .fold(f32::INFINITY, f32::min);
+    let tall_rows = row_spans
+        .iter()
+        .filter(|(_, _, members)| {
+            members
+                .iter()
+                .filter(|&&ci| chains[ci].3.len() >= 2)
+                .count()
+                >= 2
+        })
+        .count();
+    if min_gap < pitch * STACKED_MIN_ROW_GAP_PITCH_MULT || tall_rows * 2 < row_spans.len() {
+        return None;
+    }
+
+    let rows: Vec<Vec<Cell>> = row_spans
+        .iter()
+        .map(|(_, _, members)| {
+            let mut row = vec![
+                Cell {
+                    text: String::new(),
+                    bbox: None
+                };
+                column_count
+            ];
+            let mut ordered = members.clone();
+            ordered.sort_by(|&a, &b| chains[a].1.total_cmp(&chains[b].1));
+            for ci in ordered {
+                let cell = &mut row[chains[ci].0];
+                for &k in &chains[ci].3 {
+                    let located = located_cell(&entries[k].2, &lines[entries[k].0]);
+                    if !cell.text.is_empty() {
+                        cell.text.push(' ');
+                    }
+                    cell.text.push_str(&located.text);
+                    if let Some(b) = &located.bbox {
+                        Rect::extend(&mut cell.bbox, b);
+                    }
+                }
+            }
+            row
+        })
+        .collect();
+    if *super::flags::DEBUG_TABLE {
+        eprintln!(
+            "[tbl-stacked @{start}..{end}] cols={column_count} rows={} pitch={pitch:.1} min_gap={min_gap:.1}",
+            rows.len()
+        );
+    }
+    Some(TableRun {
+        start,
+        end,
+        body_start: start,
+        bbox: lines_bbox(lines, start, end),
+        block: Block::Table { header: None, rows },
+        interstitials: Vec::new(),
+    })
 }
 
 /// Header-like cell text: a few words with at least one letter. Rejects prose
@@ -1906,7 +2102,11 @@ fn detect_tables_with_pieces(
     let mut i = 0;
     let mut floor = 0;
     while i < lines.len() {
-        if let Some(run) = try_detect_table_inferred(lines, pieces, i, floor, false, false) {
+        if let Some(run) = try_detect_stacked_cell_table(lines, i) {
+            floor = run.end;
+            i = run.end;
+            out.push(run);
+        } else if let Some(run) = try_detect_table_inferred(lines, pieces, i, floor, false, false) {
             floor = run.end;
             i = run.end;
             out.push(run);
@@ -5276,6 +5476,114 @@ pub(super) fn escape_table_cell(s: &str) -> String {
 mod tests {
     use super::super::test_helpers::{line, line_with_spans, rect_borders, stroke};
     use super::*;
+
+    fn stacked_rows(rows: &[&[&[(&str, f32)]]], pitch: f32, row_gap: f32) -> Vec<ProjectedLine> {
+        let mut y = 100.0;
+        let mut out = Vec::new();
+        for row in rows {
+            for visual in row.iter() {
+                out.push(line_with_spans(visual, y, 10.0));
+                y += pitch;
+            }
+            y += row_gap - pitch;
+        }
+        out
+    }
+
+    #[test]
+    fn tall_borderless_rows_group_into_one_table_row_each() {
+        let lines = stacked_rows(
+            &[
+                &[&[
+                    ("Criteria", 40.0),
+                    ("Customer A", 200.0),
+                    ("Customer B", 360.0),
+                ]],
+                &[
+                    &[("Fixed 8-year term", 200.0), ("Fixed 6-year term;", 360.0)],
+                    &[
+                        ("Contract Term", 40.0),
+                        ("auto-extends 2 years", 200.0),
+                        ("renewal requires", 360.0),
+                    ],
+                    &[("unless terminated.", 200.0), ("mutual agreement.", 360.0)],
+                ],
+                &[
+                    &[("None. Forecasts", 200.0), ("1m pcs per year", 360.0)],
+                    &[
+                        ("Volume", 40.0),
+                        ("are non-binding.", 200.0),
+                        ("binding backlog.", 360.0),
+                    ],
+                ],
+                &[
+                    &[
+                        ("Exclusivity", 40.0),
+                        ("Sole source", 200.0),
+                        ("One-sided.", 360.0),
+                    ],
+                    &[("for Sidam.", 200.0), ("EMOTEC only.", 360.0)],
+                ],
+            ],
+            12.0,
+            22.0,
+        );
+        let run = try_detect_stacked_cell_table(&lines, 0).expect("stacked table");
+        assert_eq!((run.start, run.end), (0, lines.len()));
+        let Block::Table { header, rows } = &run.block else {
+            panic!("expected table");
+        };
+        assert!(header.is_none());
+        let texts: Vec<Vec<&str>> = rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                vec!["Criteria", "Customer A", "Customer B"],
+                vec![
+                    "Contract Term",
+                    "Fixed 8-year term auto-extends 2 years unless terminated.",
+                    "Fixed 6-year term; renewal requires mutual agreement.",
+                ],
+                vec![
+                    "Volume",
+                    "None. Forecasts are non-binding.",
+                    "1m pcs per year binding backlog."
+                ],
+                vec![
+                    "Exclusivity",
+                    "Sole source for Sidam.",
+                    "One-sided. EMOTEC only."
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn single_line_rows_are_left_to_the_line_per_row_detectors() {
+        let rows: Vec<Vec<(&str, f32)>> = (0..8)
+            .map(|_| vec![("Item", 40.0), ("1,200", 200.0), ("3,400", 360.0)])
+            .collect();
+        let row_refs: Vec<&[(&str, f32)]> = rows.iter().map(|r| r.as_slice()).collect();
+        let grouped: Vec<&[&[(&str, f32)]]> = row_refs.chunks(1).collect();
+        let lines = stacked_rows(&grouped, 12.0, 22.0);
+        assert!(try_detect_stacked_cell_table(&lines, 0).is_none());
+    }
+
+    #[test]
+    fn evenly_spaced_column_prose_is_not_a_stacked_table() {
+        let visual: &[(&str, f32)] = &[
+            ("the quick brown fox", 40.0),
+            ("jumps over the lazy", 200.0),
+            ("dog in three columns", 360.0),
+        ];
+        let lines: Vec<ProjectedLine> = (0..10)
+            .map(|i| line_with_spans(visual, 100.0 + 12.0 * i as f32, 10.0))
+            .collect();
+        assert!(try_detect_stacked_cell_table(&lines, 0).is_none());
+    }
 
     /// One PDFium run whose words sit at the given (x, width) positions.
     fn run_with_words(words: &[(&str, f32, f32)]) -> TextItem {

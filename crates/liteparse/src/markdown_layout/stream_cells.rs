@@ -44,6 +44,24 @@ pub(super) fn merge_stream_wrapped_cells(lines: &[ProjectedLine]) -> Option<Vec<
         if row.is_empty() || row.iter().any(|(_, _, numeric_stack)| *numeric_stack) {
             continue;
         }
+        // Every cell of the line stacking the same two or more lines below and
+        // ending in a number is a block of label-over-value fields.
+        let cells_on_line = lines[i]
+            .spans
+            .iter()
+            .filter(|sp| !sp.text.trim().is_empty())
+            .count();
+        if row.len() >= 2
+            && row.len() == cells_on_line
+            && row[0].1.len() >= 2
+            && row.iter().all(|(_, c, _)| c.len() == row[0].1.len())
+            && row.iter().all(|(_, c, _)| {
+                c.last()
+                    .is_some_and(|&(j, t)| !lines[j].spans[t].text.chars().any(char::is_alphabetic))
+            })
+        {
+            continue;
+        }
         let last = row
             .iter()
             .filter_map(|(_, c, _)| c.last().map(|&(j, _)| j))
@@ -499,6 +517,24 @@ mod tests {
             &[("All Forms", 60.0, 1)],
             &[("Per", 120.0, 2), ("Rate", 200.0, 3)],
             &[("$1,000", 120.0, 4), ("$2.66", 200.0, 5)],
+        ]);
+        assert!(merge_stream_wrapped_cells(&lines).is_none());
+    }
+
+    #[test]
+    fn label_over_value_fields_are_not_wrapped_cells() {
+        let lines = ordered_lines(&[
+            &[
+                ("Male", 40.0, 0),
+                ("Income", 200.0, 3),
+                ("Builder IUL7", 320.0, 6),
+            ],
+            &[
+                ("Age", 40.0, 1),
+                ("Tax Rate", 200.0, 4),
+                ("Interest Rate", 320.0, 7),
+            ],
+            &[("50", 40.0, 2), ("48.00%", 200.0, 5), ("7.00%", 320.0, 8)],
         ]);
         assert!(merge_stream_wrapped_cells(&lines).is_none());
     }

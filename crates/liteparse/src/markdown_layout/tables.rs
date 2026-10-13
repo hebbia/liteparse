@@ -615,8 +615,9 @@ fn try_detect_stacked_cell_table(lines: &[ProjectedLine], start: usize) -> Optio
     if min_gap < pitch * STACKED_MIN_ROW_GAP_PITCH_MULT || tall_rows * 2 < row_spans.len() {
         return None;
     }
-    // Every column stacking the same number of lines means each line is its
-    // own record (a dense table grouped by section gaps), not wrapped cells.
+    // Each line is its own record (a dense table grouped by section gaps), not
+    // wrapped cells, when every column stacks the same number of lines or a
+    // column stacks several numeric values.
     let records_merged = row_spans.iter().any(|(_, _, members)| {
         let mut per_column = vec![0usize; column_count];
         for &ci in members {
@@ -624,7 +625,13 @@ fn try_detect_stacked_cell_table(lines: &[ProjectedLine], start: usize) -> Optio
         }
         per_column[0] >= 2 && per_column.iter().all(|&n| n == per_column[0])
     });
-    if records_merged {
+    let numbers_stacked = chains.iter().any(|(_, _, _, ks)| {
+        ks.iter()
+            .filter(|&&k| !entries[k].2.text.chars().any(char::is_alphabetic))
+            .count()
+            >= 2
+    });
+    if records_merged || numbers_stacked {
         return None;
     }
 
@@ -5588,6 +5595,31 @@ mod tests {
     fn dense_rows_grouped_by_section_gaps_are_not_stacked_cells() {
         let full: &[(&str, f32)] = &[("Teachers", 40.0), ("53.0", 200.0), ("73.6%", 360.0)];
         let block: &[&[(&str, f32)]] = &[full, full, full];
+        let lines = stacked_rows(&[block, block, block], 12.0, 24.0);
+        assert!(try_detect_stacked_cell_table(&lines, 0).is_none());
+    }
+
+    #[test]
+    fn numeric_rows_with_a_sparse_column_are_not_stacked_cells() {
+        let block: &[&[(&str, f32)]] = &[
+            &[
+                ("Net sales - US", 40.0),
+                ("$", 200.0),
+                ("147,007", 280.0),
+                ("140,083", 400.0),
+            ],
+            &[
+                ("Net sales - intl", 40.0),
+                ("12,507", 280.0),
+                ("12,586", 400.0),
+            ],
+            &[
+                ("Net sales", 40.0),
+                ("$", 200.0),
+                ("159,514", 280.0),
+                ("152,669", 400.0),
+            ],
+        ];
         let lines = stacked_rows(&[block, block, block], 12.0, 24.0);
         assert!(try_detect_stacked_cell_table(&lines, 0).is_none());
     }

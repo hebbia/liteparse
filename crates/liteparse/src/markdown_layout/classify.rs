@@ -1349,6 +1349,31 @@ mod tests {
     }
 
     #[test]
+    fn prose_split_by_formula_gaps_is_not_folded_into_cells() {
+        use super::super::test_helpers::line_with_spans;
+
+        let lines = vec![
+            line_with_spans(
+                &[
+                    (
+                        "In the case that the distributions were identically distributed",
+                        40.0,
+                    ),
+                    ("and", 400.0),
+                    ("each partner would", 440.0),
+                ],
+                100.0,
+                10.0,
+            ),
+            line_with_spans(&[("var", 400.0), ("x", 440.0)], 112.0, 10.0),
+        ];
+
+        let rendered = render_blocks(&classify_page(&page(lines), &[]));
+
+        assert!(!rendered.contains("and var"), "{rendered}");
+    }
+
+    #[test]
     fn prose_below_a_gutter_line_is_not_folded_into_a_cell() {
         use super::super::test_helpers::line_with_spans;
         let lines = vec![

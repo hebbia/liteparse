@@ -14,6 +14,10 @@ const TABLE_MIN_ROWS: usize = 2;
 /// we treat the gap as a cell boundary.
 const TABLE_CELL_GAP_FONT_MULTIPLIER: f32 = 1.0;
 
+/// Most words a cell may hold for `fold_wrapped_cell_row` to treat its row as
+/// a wrapped table header rather than prose.
+const WRAPPED_CELL_MAX_WORDS: usize = 6;
+
 /// Tolerance (points) for matching a cell's start-x to an existing column
 /// track when extending a candidate table run.
 const TABLE_TRACK_TOLERANCE_PT: f32 = 6.0;
@@ -394,8 +398,21 @@ pub(super) fn fold_wrapped_cell_row(
     start: usize,
     limit: usize,
 ) -> Option<(Vec<String>, usize)> {
-    let cells = gutter_cells(&lines[start]);
-    if cells.len() < TABLE_MIN_COLUMNS {
+    let row = &lines[start];
+    let cells = gutter_cells(row);
+    if cells.len() < TABLE_MIN_COLUMNS || !cells.iter().all(is_wrapped_cell_text) {
+        return None;
+    }
+    let font_size = if row.dominant_font_size > 0.0 {
+        row.dominant_font_size
+    } else {
+        row.bbox.height.max(1.0)
+    };
+    let min_gutter = (font_size * TABLE_MIN_TRACK_GAP_FONT_MULT).max(TABLE_MIN_TRACK_GAP_FLOOR_PT);
+    if cells
+        .windows(2)
+        .any(|w| w[1].start_x - w[0].end_x < min_gutter)
+    {
         return None;
     }
     let track_ranges: Vec<(f32, f32)> = cells.iter().map(|c| (c.start_x, c.end_x)).collect();
@@ -408,7 +425,10 @@ pub(super) fn fold_wrapped_cell_row(
             break;
         }
         let cont = gutter_cells(line);
-        if cont.is_empty() || cont.len() >= track_ranges.len() {
+        if cont.len() < 2
+            || cont.len() >= track_ranges.len()
+            || !cont.iter().all(is_wrapped_cell_text)
+        {
             break;
         }
         let line_height = prev.bbox.height.max(line.bbox.height).max(1.0);
@@ -442,6 +462,13 @@ pub(super) fn fold_wrapped_cell_row(
         end += 1;
     }
     (end > start + 1).then_some((texts, end))
+}
+
+/// Header-like cell text: a few words with at least one letter. Rejects prose
+/// fragments split by math or missing-glyph gaps, and dot leaders.
+fn is_wrapped_cell_text(cell: &TableCell) -> bool {
+    cell.text.split_whitespace().count() <= WRAPPED_CELL_MAX_WORDS
+        && cell.text.chars().any(char::is_alphabetic)
 }
 
 /// `split_cells`, but over gutter-split pieces: projection often hands a whole

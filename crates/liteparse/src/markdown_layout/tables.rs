@@ -381,6 +381,101 @@ pub(super) fn split_cells(line: &ProjectedLine) -> Vec<TableCell> {
     cells
 }
 
+/// Fold a single borderless-table row whose cells wrap onto following lines
+/// (e.g. a `PRICE PER` / `USER/MONTH` header) when the region is too short for
+/// `detect_tables` to accept it as a table. Without this, the paragraph path
+/// emits the row line by line, interleaving each cell's first line with its
+/// neighbours'. Continuation lines must be tightly stacked, have fewer cells
+/// than the row, and put every cell inside a distinct column without
+/// spilling into the next one. Returns the per-column text and the exclusive
+/// end index of the consumed lines; `limit` bounds the scan.
+pub(super) fn fold_wrapped_cell_row(
+    lines: &[ProjectedLine],
+    start: usize,
+    limit: usize,
+) -> Option<(Vec<String>, usize)> {
+    let cells = gutter_cells(&lines[start]);
+    if cells.len() < TABLE_MIN_COLUMNS {
+        return None;
+    }
+    let track_ranges: Vec<(f32, f32)> = cells.iter().map(|c| (c.start_x, c.end_x)).collect();
+    let mut texts: Vec<String> = cells.into_iter().map(|c| c.text).collect();
+    let mut prev = &lines[start];
+    let mut end = start + 1;
+    while end < limit.min(lines.len()) {
+        let line = &lines[end];
+        if line.all_mono || line.rtl {
+            break;
+        }
+        let cont = gutter_cells(line);
+        if cont.is_empty() || cont.len() >= track_ranges.len() {
+            break;
+        }
+        let line_height = prev.bbox.height.max(line.bbox.height).max(1.0);
+        let dy = line.bbox.y - prev.bbox.y;
+        if dy <= 0.0 || dy > line_height * 1.5 {
+            break;
+        }
+        let Some(mapping) = cont
+            .iter()
+            .map(|c| match_track_idx(c, &track_ranges))
+            .collect::<Option<Vec<usize>>>()
+        else {
+            break;
+        };
+        let distinct = mapping.windows(2).all(|w| w[0] < w[1]);
+        let spills = cont.iter().zip(&mapping).any(|(c, &i)| {
+            track_ranges
+                .get(i + 1)
+                .is_some_and(|(next_start, _)| c.end_x > next_start - TABLE_TRACK_TOLERANCE_PT)
+        });
+        if !distinct || spills {
+            break;
+        }
+        for (c, &i) in cont.iter().zip(&mapping) {
+            if !texts[i].is_empty() {
+                texts[i].push(' ');
+            }
+            texts[i].push_str(&c.text);
+        }
+        prev = line;
+        end += 1;
+    }
+    (end > start + 1).then_some((texts, end))
+}
+
+/// `split_cells`, but over gutter-split pieces: projection often hands a whole
+/// row over as one run with wide internal gaps, which `split_cells` would
+/// treat as a single cell.
+fn gutter_cells(line: &ProjectedLine) -> Vec<TableCell> {
+    let font_size = if line.dominant_font_size > 0.0 {
+        line.dominant_font_size
+    } else {
+        line.bbox.height.max(1.0)
+    };
+    let gap_threshold = font_size * TABLE_CELL_GAP_FONT_MULTIPLIER;
+    let mut cells: Vec<TableCell> = Vec::new();
+    for piece in line_pieces(line) {
+        if piece.text.is_empty() {
+            continue;
+        }
+        match cells.last_mut() {
+            Some(cell) if piece.x - cell.end_x <= gap_threshold => {
+                cell.text.push(' ');
+                cell.text.push_str(&piece.text);
+                cell.end_x = cell.end_x.max(piece.end_x);
+            }
+            _ => cells.push(TableCell {
+                start_x: piece.x,
+                end_x: piece.end_x,
+                text: piece.text,
+                bold: is_bold_item(piece.span),
+            }),
+        }
+    }
+    cells
+}
+
 /// When a candidate row has fewer cells than the established column count,
 /// look for cells whose x-range straddles multiple column tracks (likely two
 /// or more adjacent words that PDFium merged into a single text run) and

@@ -604,6 +604,41 @@ fn classify_region(
         if is_rotated_line(line) {
             continue;
         }
+        let fold_limit = table_iter.peek().map_or(lines.len(), |run| run.start);
+        if !line.all_mono
+            && !line.rtl
+            && let Some((cells, end)) =
+                super::tables::fold_wrapped_cell_row(lines, line_idx, fold_limit)
+        {
+            state.flush_paragraph(&mut blocks);
+            state.flush_code(&mut blocks);
+            state.reset_list();
+            heading_run = None;
+            let mut bbox = None;
+            for folded in &lines[line_idx..end] {
+                Rect::extend(&mut bbox, &folded.bbox);
+            }
+            let bold = lines[line_idx..end].iter().all(|l| l.all_bold);
+            let text = cells
+                .iter()
+                .filter(|c| !c.is_empty())
+                .map(|c| super::inline::escape_inline(c))
+                .collect::<Vec<_>>()
+                .join("  ");
+            if debug {
+                eprintln!("[md wrapped-row] lines {line_idx}..{end} text={text:?}");
+            }
+            blocks.push(PositionedBlock::new(
+                Block::Paragraph {
+                    text,
+                    bold,
+                    italic: false,
+                },
+                bbox,
+            ));
+            idx = end;
+            continue;
+        }
         if debug {
             eprintln!(
                 "[md] y={:.1} h={:.1} size={:.2} anchor={:?} indent={:.1} text={:?}",
@@ -1266,6 +1301,69 @@ mod tests {
         // The following paragraph keeps its own band rather than inheriting it.
         let next = bbox(2);
         assert_eq!((next.y, next.height), (130.0, 10.0));
+    }
+
+    #[test]
+    fn wrapped_cells_in_a_lone_table_row_stay_contiguous() {
+        use super::super::test_helpers::line_with_spans;
+        let cols = [40.0, 220.0, 310.0, 400.0, 490.0];
+        let lines = vec![
+            line_with_spans(
+                &[
+                    ("PRODUCT PACKAGE", cols[0]),
+                    ("PRICE PER", cols[1]),
+                    ("NUMBER OF", cols[2]),
+                    ("MONTHLY", cols[3]),
+                    ("ANNUAL", cols[4]),
+                ],
+                100.0,
+                10.0,
+            ),
+            line_with_spans(
+                &[
+                    ("USER/MONTH", cols[1]),
+                    ("USERS", cols[2]),
+                    ("PAYMENT", cols[3]),
+                    ("COST", cols[4]),
+                ],
+                112.0,
+                10.0,
+            ),
+            line("Prices exclude tax.", 40.0, 160.0, 10.0, 10.0),
+        ];
+        let blocks = classify_page(&page(lines), &[]);
+        let texts: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match &b.block {
+                Block::Paragraph { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "PRODUCT PACKAGE  PRICE PER USER/MONTH  NUMBER OF USERS  MONTHLY PAYMENT  ANNUAL COST",
+                "Prices exclude tax.",
+            ]
+        );
+    }
+
+    #[test]
+    fn prose_below_a_gutter_line_is_not_folded_into_a_cell() {
+        use super::super::test_helpers::line_with_spans;
+        let lines = vec![
+            line_with_spans(&[("A1", 40.0), ("B1", 220.0), ("C1", 400.0)], 100.0, 10.0),
+            line_with_spans(
+                &[("this sentence is long enough to run under B1", 40.0)],
+                112.0,
+                10.0,
+            ),
+            line_with_spans(&[("loose", 40.0), ("note", 220.0)], 150.0, 10.0),
+        ];
+        let blocks = classify_page(&page(lines), &[]);
+        let rendered = render_blocks(&blocks);
+        assert!(!rendered.contains("A1 this"), "{rendered}");
+        assert!(!rendered.contains("A1 loose"), "{rendered}");
     }
 
     #[test]

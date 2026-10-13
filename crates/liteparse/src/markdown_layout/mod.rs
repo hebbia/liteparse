@@ -16,6 +16,7 @@ mod inline;
 mod lists;
 mod paragraphs;
 mod repetition;
+mod stream_cells;
 mod tables;
 
 pub use blocks::{Block, Cell, PositionedBlock, SpanCell, render_blocks, splice_soft_hyphens};

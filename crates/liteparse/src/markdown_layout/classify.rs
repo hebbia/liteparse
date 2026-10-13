@@ -153,6 +153,8 @@ pub fn classify_page_with_filters(
     } else {
         &filtered_owned
     };
+    let stream_merged = super::stream_cells::merge_stream_wrapped_cells(lines);
+    let lines: &[ProjectedLine] = stream_merged.as_deref().unwrap_or(lines);
 
     // Global ruled-table pass. `detect_ruled_tables` is otherwise called per
     // xy_cut leaf, but a ruled table whose rows scatter across several leaves

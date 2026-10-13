@@ -3403,7 +3403,9 @@ impl SegmentBuilder {
             let width = self.vp_right - self.vp_left;
             let height = self.vp_bottom - self.vp_top;
 
+            let order = items.len() as u32;
             items.push(TextItem {
+                stream_order: Some((order, order)),
                 text: trimmed.to_string(),
                 x: self.vp_left,
                 y: self.vp_top,

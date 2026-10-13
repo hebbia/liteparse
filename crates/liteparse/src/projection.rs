@@ -595,6 +595,7 @@ fn form_lines(
                 let merged = merge_bbox(prev, &cur);
                 prev.item.text.push_str(&cur.item.text);
                 prev.item.words.append(&mut cur.item.words);
+                prev.item.absorb_stream_order(&cur.item);
                 prev.item.x = merged.0;
                 prev.item.y = merged.1;
                 prev.item.width = merged.2;
@@ -797,6 +798,7 @@ fn form_lines(
                     prev.item.width = item.item.x + item.item.width - prev.item.x;
                     prev.item.text.push_str(&item.item.text);
                     prev.item.words.append(&mut item.item.words);
+                    prev.item.absorb_stream_order(&item.item);
                     merge_orig_bbox(prev, &item);
                     continue;
                 }
@@ -831,6 +833,7 @@ fn form_lines(
                     prev.item.width = item.item.x + item.item.width - prev.item.x;
                     prev.item.text.push_str(&item.item.text);
                     prev.item.words.append(&mut item.item.words);
+                    prev.item.absorb_stream_order(&item.item);
                     merge_orig_bbox(prev, &item);
                     continue;
                 }
@@ -844,6 +847,7 @@ fn form_lines(
                     }
                     prev.item.text.push_str(&item.item.text);
                     prev.item.words.append(&mut item.item.words);
+                    prev.item.absorb_stream_order(&item.item);
                     merge_orig_bbox(prev, &item);
                     continue;
                 }

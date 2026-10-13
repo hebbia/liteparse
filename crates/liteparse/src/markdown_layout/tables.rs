@@ -37,10 +37,10 @@ const TABLE_TRACK_TOLERANCE_PT: f32 = 6.0;
 /// adjacent column tracks for them to count as distinct columns. The two
 /// callers — inferred-track detection and the ruled-grid track derivation —
 /// must use the same value or one stage can fuse columns the other split.
-const TABLE_MIN_TRACK_GAP_FONT_MULT: f32 = 1.5;
+pub(super) const TABLE_MIN_TRACK_GAP_FONT_MULT: f32 = 1.5;
 /// Absolute floor (points) on the inter-track gap, paired with
 /// `TABLE_MIN_TRACK_GAP_FONT_MULT` so tiny-font pages keep a sane minimum.
-const TABLE_MIN_TRACK_GAP_FLOOR_PT: f32 = 12.0;
+pub(super) const TABLE_MIN_TRACK_GAP_FLOOR_PT: f32 = 12.0;
 
 /// Minimum fraction of a row's cells that must carry text for that row to
 /// anchor the header/body split in ruled-grid collapse.
@@ -689,7 +689,7 @@ fn is_wrapped_cell_text(cell: &TableCell) -> bool {
 /// `split_cells`, but over gutter-split pieces: projection often hands a whole
 /// row over as one run with wide internal gaps, which `split_cells` would
 /// treat as a single cell.
-fn gutter_cells(line: &ProjectedLine) -> Vec<TableCell> {
+pub(super) fn gutter_cells(line: &ProjectedLine) -> Vec<TableCell> {
     let font_size = if line.dominant_font_size > 0.0 {
         line.dominant_font_size
     } else {

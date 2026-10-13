@@ -132,6 +132,22 @@ pub struct TextItem {
     /// and must survive a stage boundary (see `stages`), so it serializes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<WordBox>,
+    /// First and last index, in page content-stream order, of the extracted
+    /// segments this item covers. `None` for items not taken from the PDF text
+    /// layer (OCR, synthesized). Markdown table detection uses it to keep a
+    /// wrapped cell's lines together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_order: Option<(u32, u32)>,
+}
+
+impl TextItem {
+    /// Absorb `other`'s content-stream range when merging it into `self`.
+    pub(crate) fn absorb_stream_order(&mut self, other: &TextItem) {
+        self.stream_order = match (self.stream_order, other.stream_order) {
+            (Some((a, b)), Some((c, d))) => Some((a.min(c), b.max(d))),
+            _ => None,
+        };
+    }
 }
 
 /// The `TextItem` fields governed by `extract_text_metadata`, pre-gated by

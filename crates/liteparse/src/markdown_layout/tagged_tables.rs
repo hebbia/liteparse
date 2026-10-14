@@ -137,6 +137,28 @@ fn owns(cell_of: &HashMap<i32, (usize, usize)>, span: &TextItem) -> bool {
     span.mcid.is_some_and(|m| cell_of.contains_key(&m))
 }
 
+/// Horizontal extent of the table's own text across `lines`.
+fn x_extent<'a>(
+    lines: impl Iterator<Item = &'a ProjectedLine>,
+    cell_of: &HashMap<i32, (usize, usize)>,
+) -> (f32, f32) {
+    let mut ext = (f32::INFINITY, f32::NEG_INFINITY);
+    for s in lines
+        .flat_map(|l| &l.spans)
+        .filter(|s| has_text(s) && owns(cell_of, s))
+    {
+        ext.0 = ext.0.min(s.x);
+        ext.1 = ext.1.max(s.x + s.width);
+    }
+    ext
+}
+
+/// Untagged text (artifacts such as margin page numbers) that shares a
+/// baseline with a table row but sits wholly beside the table.
+fn beside(span: &TextItem, ext: (f32, f32)) -> bool {
+    span.mcid.is_none() && (span.x + span.width <= ext.0 || span.x >= ext.1)
+}
+
 /// When the XY-cut sliced a tagged table into several leaves, move all of its
 /// lines into the first leaf (in y order) so `classify_region` sees it whole.
 /// Tables whose lines also carry other text are left alone.
@@ -163,13 +185,14 @@ pub(super) fn regroup_split_tables(
             continue;
         };
         let path = src[first].region_path.clone();
+        let ext = x_extent(idx.iter().map(|&i| &src[i]), &cell_of);
         if idx.iter().all(|&i| src[i].region_path == path)
             || idx.iter().any(|&i| {
                 src[i].rtl
                     || src[i]
                         .spans
                         .iter()
-                        .any(|s| has_text(s) && !owns(&cell_of, s))
+                        .any(|s| has_text(s) && !owns(&cell_of, s) && !beside(s, ext))
             })
         {
             continue;
@@ -237,12 +260,21 @@ fn build_run(
         return None;
     }
     let covered = &lines[start..end];
-    if covered
-        .iter()
-        .any(|l| l.rtl || l.spans.iter().any(|s| has_text(s) && !owned(s)))
-    {
+    let ext = x_extent(covered.iter(), &cell_of);
+    if covered.iter().any(|l| {
+        l.rtl
+            || l.spans
+                .iter()
+                .any(|s| has_text(s) && !owned(s) && !beside(s, ext))
+    }) {
         return None;
     }
+    let interstitials: Vec<Cell> = covered
+        .iter()
+        .flat_map(|l| &l.spans)
+        .filter(|s| has_text(s) && !owned(s))
+        .map(|s| Cell::located(s.text.trim(), item_rect(s)))
+        .collect();
 
     let mut texts: Vec<Vec<String>> = table
         .rows
@@ -255,7 +287,7 @@ fn build_run(
     for line in covered {
         let mut line_text: HashMap<(usize, usize), (String, Option<f32>)> = HashMap::new();
         let mut order = Vec::new();
-        for span in line.spans.iter().filter(|s| has_text(s)) {
+        for span in line.spans.iter().filter(|s| has_text(s) && owned(s)) {
             let key = cell_of[&span.mcid.unwrap()];
             let entry = line_text.entry(key).or_insert_with(|| {
                 order.push(key);
@@ -319,7 +351,7 @@ fn build_run(
         end,
         body_start: start,
         block: Block::Table { header, rows },
-        interstitials: Vec::new(),
+        interstitials,
         bbox,
     })
 }
@@ -466,8 +498,25 @@ mod tests {
     #[test]
     fn foreign_text_inside_the_table_lines_falls_back() {
         let mut lines = table_lines();
-        lines[2].spans.push(span("note", 300.0, 50.0, None));
+        let mut between = lines.clone();
+        between[2].spans.insert(1, span("note", 120.0, 50.0, None));
+        assert!(detect_tagged_tables(&between, &between, &two_by_two("TD")).is_empty());
+        // Tagged text from another structure element, even beside the table.
+        lines[2].spans.push(span("note", 300.0, 50.0, Some(99)));
         assert!(detect_tagged_tables(&lines, &lines, &two_by_two("TD")).is_empty());
+    }
+
+    #[test]
+    fn margin_artifact_on_a_row_is_kept_beside_the_table() {
+        let mut lines = table_lines();
+        lines[2].spans.insert(0, span("3", 10.0, 50.0, None));
+        let runs = detect_tagged_tables(&lines, &lines, &two_by_two("TD"));
+        assert_eq!(runs.len(), 1);
+        assert_eq!(cells(&runs[0].interstitials), ["3"]);
+        let Block::Table { rows, .. } = &runs[0].block else {
+            panic!("expected table");
+        };
+        assert_eq!(cells(&rows[1]), ["Contract Expiry", "8 years"]);
     }
 
     #[test]

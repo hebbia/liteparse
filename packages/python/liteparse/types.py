@@ -489,6 +489,9 @@ class LiteParseConfig:
     extract_text_metadata: bool = False
     #: Keep OCR text from embedded figures that look like charts.
     ocr_keep_figure_text: bool = False
+    #: How tables render in markdown output: ``"markdown"`` for GFM pipe
+    #: tables, ``"html"`` for ``<table>`` markup.
+    table_format: str = "markdown"
     #: Keep running headers/footers in markdown output instead of stripping
     #: repeated page-band lines and page chrome.
     keep_headers_footers: bool = False

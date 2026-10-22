@@ -1494,14 +1494,12 @@ fn garbled_scope(page: &Page) -> GarbledScope {
     let min_letter_share = (total_letters as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
     // A symbol-swamped font has almost no letters, so it can never reach a
     // letters-based share floor — judge its share on non-space chars instead.
-    let min_non_space_share =
-        (total_non_space as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
+    let min_non_space_share = (total_non_space as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
     let fonts: HashSet<Option<String>> = per_font
         .into_iter()
         .filter(|&(_, (letters, vowels, non_space, symbols))| {
             (letters >= min_letter_share && ratio_is_garbled(letters, vowels))
-                || (non_space >= min_non_space_share
-                    && symbol_ratio_is_garbled(symbols, non_space))
+                || (non_space >= min_non_space_share && symbol_ratio_is_garbled(symbols, non_space))
         })
         .map(|(font, _)| font.map(str::to_string))
         .collect();
@@ -2348,10 +2346,7 @@ mod tests {
 
     #[test]
     fn test_garbled_scope_symbol_cipher_whole_page() {
-        let items: Vec<(&str, &str)> = SYMBOL_CIPHER
-            .iter()
-            .map(|t| ("CipherFont", *t))
-            .collect();
+        let items: Vec<(&str, &str)> = SYMBOL_CIPHER.iter().map(|t| ("CipherFont", *t)).collect();
         let page = make_font_page(&items);
         assert!(matches!(garbled_scope(&page), GarbledScope::WholePage));
         assert!(page_is_garbled(&page));
@@ -2385,10 +2380,7 @@ mod tests {
     /// Digit-heavy table rows with ordinary punctuation stay clean.
     #[test]
     fn test_garbled_scope_numeric_table_not_garbled() {
-        let items: Vec<(&str, &str)> = NUMERIC_TABLE
-            .iter()
-            .map(|t| ("TableFont", *t))
-            .collect();
+        let items: Vec<(&str, &str)> = NUMERIC_TABLE.iter().map(|t| ("TableFont", *t)).collect();
         let page = make_font_page(&items);
         assert!(matches!(garbled_scope(&page), GarbledScope::None));
         assert!(!page_is_garbled(&page));
@@ -2400,9 +2392,7 @@ mod tests {
         // A short symbol-dense token is not judged.
         assert!(!is_likely_garbled("$(1,234.5)"));
         // Ordinary punctuated prose is not judged.
-        assert!(!is_likely_garbled(
-            "Wait — really? (Yes.) Ok, fine: go."
-        ));
+        assert!(!is_likely_garbled("Wait — really? (Yes.) Ok, fine: go."));
     }
 
     /// Items with no font name still fall back to the page-wide verdict.

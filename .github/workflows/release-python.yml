@@ -406,3 +406,5 @@ jobs:
           find dist -name "*.whl" -exec echo "- {}" \; >> $GITHUB_STEP_SUMMARY
           echo "### CLI artifacts:" >> $GITHUB_STEP_SUMMARY
           find cli-artifacts -name "*.tar.gz" -exec echo "- {}" \; >> $GITHUB_STEP_SUMMARY
+
+# retrigger registration

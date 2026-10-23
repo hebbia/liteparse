@@ -480,11 +480,7 @@ pub fn render_blocks_with(blocks: &[PositionedBlock], table_format: TableFormat)
                     let span_rows: Vec<Vec<SpanCell>> = header
                         .iter()
                         .chain(rows.iter())
-                        .map(|r| {
-                            r.iter()
-                                .map(|c| SpanCell::new(c.text.clone()))
-                                .collect()
-                        })
+                        .map(|r| r.iter().map(|c| SpanCell::new(c.text.clone())).collect())
                         .collect();
                     render_html_table(&span_rows, usize::from(header.is_some()), &mut out);
                     continue;
@@ -715,15 +711,14 @@ mod tests {
 
     #[test]
     fn table_format_html_skips_pipe_fallback_for_plain_merged_grid() {
-        let positioned: Vec<PositionedBlock> = vec![PositionedBlock::unlocated(
-            Block::MergedTable {
+        let positioned: Vec<PositionedBlock> =
+            vec![PositionedBlock::unlocated(Block::MergedTable {
                 header_rows: 1,
                 rows: vec![
                     vec![SpanCell::new("a"), SpanCell::new("b")],
                     vec![SpanCell::new("1"), SpanCell::new("2")],
                 ],
-            },
-        )];
+            })];
         let s = render_blocks_with(&positioned, TableFormat::Html);
         assert!(s.starts_with("<table>"), "expected HTML table, got: {s}");
         assert!(s.contains("<th>a</th>"));
@@ -737,10 +732,7 @@ mod tests {
             rows: vec![vec!["1".into(), "2".into()]],
         })];
         let s = render_blocks_with(&positioned, TableFormat::Html);
-        assert_eq!(
-            s,
-            "<table>\n<tr>\n<td>1</td>\n<td>2</td>\n</tr>\n</table>"
-        );
+        assert_eq!(s, "<table>\n<tr>\n<td>1</td>\n<td>2</td>\n</tr>\n</table>");
     }
 
     #[test]

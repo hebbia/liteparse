@@ -15,9 +15,7 @@
 
 use std::sync::Arc;
 
-use liteparse::config::{
-    CropBox, ImageMode, OutputFormat, PageOrientationCorrection, TableFormat,
-};
+use liteparse::config::{CropBox, ImageMode, OutputFormat, PageOrientationCorrection, TableFormat};
 use liteparse::ocr::{OcrEngine, OcrOptions, OcrResult};
 use liteparse::stages::{self, Library};
 use liteparse::types::{Page, ParsedPage, PdfInput};

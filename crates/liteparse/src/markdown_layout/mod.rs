@@ -21,8 +21,7 @@ mod tables;
 mod tagged_tables;
 
 pub use blocks::{
-    Block, Cell, PositionedBlock, SpanCell, render_blocks, render_blocks_with,
-    splice_soft_hyphens,
+    Block, Cell, PositionedBlock, SpanCell, render_blocks, render_blocks_with, splice_soft_hyphens,
 };
 pub use classify::classify_page_with_filters;
 pub use headings::{build_heading_map, compute_body_size};

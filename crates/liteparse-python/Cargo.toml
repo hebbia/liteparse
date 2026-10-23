@@ -1,6 +1,6 @@
 [package]
 name = "liteparse-python"
-version = "2.16.0+hebbia.5"
+version = "2.16.0+hebbia.6"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

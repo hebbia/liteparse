@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "liteparse-python"
-version = "2.16.0"
+version = "2.16.0+hebbia.5"
 dependencies = [
  "anyhow",
  "clap",

@@ -1476,8 +1476,9 @@ fn is_likely_garbled(text: &str) -> bool {
     if letters >= 10 && vowels * 10 < letters {
         return true;
     }
-    let (non_space, symbols) = count_non_space_and_symbols(&text);
-    non_space >= GARBLE_MIN_ITEM_NON_SPACE && symbol_ratio_is_garbled(symbols, non_space)
+    let (non_space, symbols, digits, counts) = count_non_space_and_symbols(&text);
+    non_space >= GARBLE_MIN_ITEM_NON_SPACE
+        && symbol_ratio_is_garbled(symbols, non_space, digits, &counts)
 }
 
 /// Precomposed Latin vowels carrying diacritics, lowercase. Without these,
@@ -1523,34 +1524,112 @@ const GARBLE_MIN_LETTERS: usize = 30;
 /// nature.
 const GARBLE_MIN_ITEM_NON_SPACE: usize = 20;
 
+/// Minimum length of a same-character run treated as visual filler rather
+/// than text. Table-of-contents dot leaders, underlines and dashes are one
+/// symbol repeated for layout; cipher garble mixes symbols, so runs this
+/// long are almost never corruption.
+const SYMBOL_FILLER_RUN: usize = 4;
+
 /// Counts non-whitespace chars and how many of them are ASCII punctuation /
 /// symbol characters (`(` `%` `&` …). A second garble signal for cipher cmaps
 /// that map letters into the symbol range: their output carries too few
 /// letters for the vowel check to judge but is implausibly dense in ASCII
 /// punctuation. Digits are not symbols, so numeric tables don't inflate the
 /// ratio; non-ASCII chars are excluded so CJK text and Type3 PUA fallback
-/// (handled by `page_has_unmapped_text`) don't either.
-fn count_non_space_and_symbols(text: &str) -> (usize, usize) {
+/// (handled by `page_has_unmapped_text`) don't either. Same-character runs
+/// of [`SYMBOL_FILLER_RUN`] or more (TOC dot leaders `……`, rules `____`)
+/// are layout filler and count toward `non_space` but not `symbols`.
+/// The third return is a per-character count for every ASCII symbol char
+/// (index = char - 33; control chars fold into index 0), so callers can tell
+/// one filler motif repeated (`- $ - $`, spaced dot leaders) apart from the
+/// many-symbol mix of a real cipher.
+fn count_non_space_and_symbols(text: &str) -> (usize, usize, usize, [u32; 96]) {
     let mut non_space = 0usize;
     let mut symbols = 0usize;
-    for ch in text.chars() {
+    let mut digits = 0usize;
+    let mut symbol_counts = [0u32; 96];
+    let mut prev_sym: Option<char> = None;
+    let mut run_so_far = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
         if ch.is_whitespace() {
+            prev_sym = None;
             continue;
         }
         non_space += 1;
-        if ch.is_ascii() && !ch.is_ascii_alphanumeric() {
+        if !ch.is_ascii() || ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_digit() {
+                digits += 1;
+            }
+            prev_sym = None;
+            continue;
+        }
+        if prev_sym == Some(ch) {
+            run_so_far += 1;
+        } else {
+            prev_sym = Some(ch);
+            run_so_far = 1;
+        }
+        let mut look = chars.clone();
+        let mut ahead = 0usize;
+        while matches!(look.next(), Some(n) if n == ch) {
+            ahead += 1;
+        }
+        if run_so_far + ahead < SYMBOL_FILLER_RUN {
             symbols += 1;
+            symbol_counts[(ch as usize).saturating_sub(33).min(95)] += 1;
         }
     }
-    (non_space, symbols)
+    (non_space, symbols, digits, symbol_counts)
+}
+
+/// Minimum distinct ASCII symbol characters before symbol density means
+/// garble. A real cipher permutes most of the alphabet into the punctuation
+/// range, so it emits a mix (`(` `$` `%` `&` `/` `'` `<` … — ~9 kinds). Layout
+/// filler repeats a motif of a few symbols — spaced dot leaders, `- $ - $`
+/// spacer rows, `| |` rules — so dense-but-few-symbol text is a grid, not
+/// corruption.
+const GARBLE_MIN_SYMBOL_KINDS: u32 = 5;
+
+/// Filler is concentrated: a dot grid or spacer row is almost all one
+/// character. Cipher symbols spread across the whole punctuation alphabet, so
+/// no single kind reaches this share of the total.
+const GARBLE_FILLER_DOMINANCE: f32 = 0.70;
+
+/// Distinct symbol kinds and the largest single-kind count in a symbol
+/// histogram built by [`count_non_space_and_symbols`].
+fn symbol_kinds_and_top(counts: &[u32; 96]) -> (u32, u32) {
+    let mut kinds = 0u32;
+    let mut top = 0u32;
+    for &c in counts.iter() {
+        if c > 0 {
+            kinds += 1;
+        }
+        top = top.max(c);
+    }
+    (kinds, top)
 }
 
 /// True when a body of text is symbol-swamped: ASCII punctuation at or above
-/// 40% of non-space chars. Real prose punctuates at ~5–10%; dense numeric
-/// tables and code rarely reach 25%; cipher-garbled text that maps letters
-/// onto `(` `$` `%` `&` sits around 50–70%.
-fn symbol_ratio_is_garbled(symbols: usize, non_space: usize) -> bool {
-    non_space >= GARBLE_MIN_LETTERS && symbols * 5 >= non_space * 2
+/// 40% of non-space chars, spread across at least
+/// [`GARBLE_MIN_SYMBOL_KINDS`] distinct symbols with no single kind
+/// dominating, and outnumbering digits. Real prose punctuates at ~5–10%;
+/// dense numeric tables and code rarely reach 25%; cipher-garbled text that
+/// maps letters onto `(` `$` `%` `&` sits around 50–70% and carries almost no
+/// digits — a numeric grid like `$ 758,207.10 - $ - $` always has more
+/// digits than symbols, which keeps it from tripping the check.
+fn symbol_ratio_is_garbled(
+    symbols: usize,
+    non_space: usize,
+    digits: usize,
+    counts: &[u32; 96],
+) -> bool {
+    let (kinds, top) = symbol_kinds_and_top(counts);
+    non_space >= GARBLE_MIN_LETTERS
+        && kinds >= GARBLE_MIN_SYMBOL_KINDS
+        && (top as f32) < symbols as f32 * GARBLE_FILLER_DOMINANCE
+        && symbols > digits
+        && symbols * 5 >= non_space * 2
 }
 
 /// A font group must hold at least this share of the page's letters before its
@@ -1601,27 +1680,38 @@ fn garbled_scope(page: &Page) -> GarbledScope {
     let mut total_vowels = 0usize;
     let mut total_non_space = 0usize;
     let mut total_symbols = 0usize;
+    let mut total_digits = 0usize;
+    let mut total_counts = [0u32; 96];
     // Keyed by font name, so text sharing a ToUnicode map is judged together.
-    // (letters, vowels, non_space, symbols)
-    let mut per_font: HashMap<Option<&str>, (usize, usize, usize, usize)> = HashMap::new();
+    // (letters, vowels, non_space, symbols, digits, symbol_counts)
+    let mut per_font: HashMap<Option<&str>, (usize, usize, usize, usize, usize, [u32; 96])> =
+        HashMap::new();
     for it in &page.text_items {
         let (l, v) = count_letters_and_vowels(&it.text);
-        let (ns, sy) = count_non_space_and_symbols(&it.text);
+        let (ns, sy, di, sc) = count_non_space_and_symbols(&it.text);
         total_letters += l;
         total_vowels += v;
         total_non_space += ns;
         total_symbols += sy;
+        total_digits += di;
+        for (i, c) in sc.iter().enumerate() {
+            total_counts[i] += c;
+        }
         let entry = per_font
             .entry(it.font_name.as_deref())
-            .or_insert((0, 0, 0, 0));
+            .or_insert((0, 0, 0, 0, 0, [0; 96]));
         entry.0 += l;
         entry.1 += v;
         entry.2 += ns;
         entry.3 += sy;
+        entry.4 += di;
+        for (i, c) in sc.iter().enumerate() {
+            entry.5[i] += c;
+        }
     }
 
     if ratio_is_garbled(total_letters, total_vowels)
-        || symbol_ratio_is_garbled(total_symbols, total_non_space)
+        || symbol_ratio_is_garbled(total_symbols, total_non_space, total_digits, &total_counts)
     {
         return GarbledScope::WholePage;
     }
@@ -1629,15 +1719,16 @@ fn garbled_scope(page: &Page) -> GarbledScope {
     let min_letter_share = (total_letters as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
     // A symbol-swamped font has almost no letters, so it can never reach a
     // letters-based share floor — judge its share on non-space chars instead.
-    let min_non_space_share =
-        (total_non_space as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
+    let min_non_space_share = (total_non_space as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
     let fonts: HashSet<Option<String>> = per_font
         .into_iter()
-        .filter(|&(_, (letters, vowels, non_space, symbols))| {
-            (letters >= min_letter_share && ratio_is_garbled(letters, vowels))
-                || (non_space >= min_non_space_share
-                    && symbol_ratio_is_garbled(symbols, non_space))
-        })
+        .filter(
+            |&(_, (letters, vowels, non_space, symbols, digits, counts))| {
+                (letters >= min_letter_share && ratio_is_garbled(letters, vowels))
+                    || (non_space >= min_non_space_share
+                        && symbol_ratio_is_garbled(symbols, non_space, digits, &counts))
+            },
+        )
         .map(|(font, _)| font.map(str::to_string))
         .collect();
 
@@ -2564,10 +2655,7 @@ mod tests {
 
     #[test]
     fn test_garbled_scope_symbol_cipher_whole_page() {
-        let items: Vec<(&str, &str)> = SYMBOL_CIPHER
-            .iter()
-            .map(|t| ("CipherFont", *t))
-            .collect();
+        let items: Vec<(&str, &str)> = SYMBOL_CIPHER.iter().map(|t| ("CipherFont", *t)).collect();
         let page = make_font_page(&items);
         assert!(matches!(garbled_scope(&page), GarbledScope::WholePage));
         assert!(page_is_garbled(&page));
@@ -2601,13 +2689,93 @@ mod tests {
     /// Digit-heavy table rows with ordinary punctuation stay clean.
     #[test]
     fn test_garbled_scope_numeric_table_not_garbled() {
-        let items: Vec<(&str, &str)> = NUMERIC_TABLE
-            .iter()
-            .map(|t| ("TableFont", *t))
-            .collect();
+        let items: Vec<(&str, &str)> = NUMERIC_TABLE.iter().map(|t| ("TableFont", *t)).collect();
         let page = make_font_page(&items);
         assert!(matches!(garbled_scope(&page), GarbledScope::None));
         assert!(!page_is_garbled(&page));
+    }
+
+    /// Table-of-contents dot leaders are dense in one repeated symbol, not
+    /// cipher text: the filler run doesn't count toward the symbol ratio.
+    #[test]
+    fn test_garbled_scope_dot_leaders_not_garbled() {
+        const TOC: &[&str] = &[
+            "Instructions and Terms of Reference 3",
+            "1.1 Client ..................................................................... 3",
+            "1.2 Property .................................................................. 3",
+            "1.3 Instructions and Basis of Valuation ......................................... 3",
+            "1.4 Definition of Fair Market Value ............................................. 3",
+            "1.5 Conflicts of Interest ....................................................... 3",
+            "2.1 Overview .................................................................... 7",
+            "2.2 Floor Areas ................................................................. 7",
+            "2.3 Condition and Repair ........................................................ 7",
+            "Signatories ..................................................................... 6",
+        ];
+        let items: Vec<(&str, &str)> = TOC.iter().map(|t| ("BodyFont", *t)).collect();
+        let page = make_font_page(&items);
+        assert!(matches!(garbled_scope(&page), GarbledScope::None));
+        assert!(!page_is_garbled(&page));
+        for it in &page.text_items {
+            assert!(!is_unusable_native(it), "{}", it.text);
+        }
+    }
+
+    /// Financial tables whose rows are layout filler — spaced dot leaders and
+    /// `- $ - $` spacer rows — are dense in symbols but use only a few distinct
+    /// ones, so they are a grid, not a cipher.
+    #[test]
+    fn test_garbled_scope_dot_grid_table_not_garbled() {
+        const DOT_GRID: &[&str] = &[
+            "MIDTOWN VILLAGE . . . . . . . . . . . . . . . . . . . . . . . . . . . . .",
+            ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .",
+            ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .",
+            "Total liabilities - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ -",
+            "- $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ - $ -",
+            "Cash flows from operations 8,830.77 (500.00) 1,234.56",
+            ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .",
+            ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .",
+            "Total assets, at fair value 9,876,543.21 100.0% $3,210.98",
+        ];
+        let items: Vec<(&str, &str)> = DOT_GRID.iter().map(|t| ("TableFont", *t)).collect();
+        let page = make_font_page(&items);
+        assert!(matches!(garbled_scope(&page), GarbledScope::None));
+        assert!(!page_is_garbled(&page));
+        for it in &page.text_items {
+            assert!(!is_unusable_native(it), "{}", it.text);
+        }
+    }
+
+    /// A currency-column grid — `$ 758,207.10` rows with `- $ - $` spacers —
+    /// has zero letters and ~40% symbols, the exact cipher shape, but its
+    /// digits outnumber its symbols so it is data, not garble.
+    #[test]
+    fn test_garbled_scope_currency_grid_not_garbled() {
+        const CURRENCY_GRID: &[&str] = &[
+            "COMBINED (Tracts A1-A5) $ 758,207.10 $ 764,246.90 $ 764,362.02",
+            "$ 764,632.00 $ 769,226.45 $ 770,042.63 $ 770,631.05",
+            "$ - $ - $ - $ - $ - $ - $ - $ - $",
+            "$ (64,047.50) $ (64,047.50) $ (192,142.50) $ (2,500.00)",
+            "$ - $ - $ - $ - $ - $ - $ - $ - $",
+            "$ 771,271.16 $ 835,397.69 $ 837,755.85 $ 878,786.85",
+            "$ 9,455,190.75 $ - $ - $ - $ - $",
+        ];
+        let items: Vec<(&str, &str)> = CURRENCY_GRID.iter().map(|t| ("TableFont", *t)).collect();
+        let page = make_font_page(&items);
+        assert!(matches!(garbled_scope(&page), GarbledScope::None));
+        assert!(!page_is_garbled(&page));
+        for it in &page.text_items {
+            assert!(!is_unusable_native(it), "{}", it.text);
+        }
+    }
+
+    /// A cipher mixing many distinct symbols still flags — the kinds floor only
+    /// exempts few-symbol filler motifs.
+    #[test]
+    fn test_garbled_scope_symbol_cipher_still_garbled() {
+        let items: Vec<(&str, &str)> = SYMBOL_CIPHER.iter().map(|t| ("CipherFont", *t)).collect();
+        let page = make_font_page(&items);
+        assert!(matches!(garbled_scope(&page), GarbledScope::WholePage));
+        assert!(page_is_garbled(&page));
     }
 
     #[test]
@@ -2616,9 +2784,7 @@ mod tests {
         // A short symbol-dense token is not judged.
         assert!(!is_likely_garbled("$(1,234.5)"));
         // Ordinary punctuated prose is not judged.
-        assert!(!is_likely_garbled(
-            "Wait — really? (Yes.) Ok, fine: go."
-        ));
+        assert!(!is_likely_garbled("Wait — really? (Yes.) Ok, fine: go."));
     }
 
     /// Items with no font name still fall back to the page-wide verdict.

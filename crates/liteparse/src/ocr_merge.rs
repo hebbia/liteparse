@@ -1632,6 +1632,56 @@ fn symbol_ratio_is_garbled(
         && symbols * 5 >= non_space * 2
 }
 
+/// Minimum words of ≥4 letters before a case-transition share means anything:
+/// below this a single interCap brand name can dominate the count.
+const CASE_GARBLE_MIN_WORDS: usize = 10;
+
+/// Share of long words that must switch case mid-word to declare
+/// lookalike-encoded text. Corrupt pages run ~20–55%; natural text — even
+/// identifier-dense — stays under ~5% (two-hump names like "YouTube" or
+/// "MacBook" are rare on any one page).
+const CASE_GARBLE_MIN_BAD_SHARE: f32 = 0.15;
+
+/// Counts `(bad_words, total_words)` where `total` is words of ≥4 letters and
+/// `bad` is the subset whose letters switch case two or more times. Natural
+/// words are uniformly cased (all-lower, ALL-CAPS, Title) modulo an isolated
+/// hump, while fonts that map one script's glyphs onto another script's
+/// codepoints — the lookalike mojibake of old Acrobat OCR layers
+/// ("PEaM3UPAHETO", "cobcrBen") — alternate case inside nearly every word.
+/// Digits and punctuation split words, matching how a reader sees the tokens.
+fn count_case_transition_words(text: &str) -> (usize, usize) {
+    let mut bad = 0usize;
+    let mut total = 0usize;
+    for word in text.split(|c: char| !c.is_alphabetic()) {
+        let mut letters = 0usize;
+        let mut transitions = 0usize;
+        let mut prev_upper = false;
+        for ch in word.chars() {
+            let upper = ch.is_uppercase();
+            if letters > 0 && upper != prev_upper {
+                transitions += 1;
+            }
+            prev_upper = upper;
+            letters += 1;
+        }
+        if letters >= 4 {
+            total += 1;
+            if transitions >= 2 {
+                bad += 1;
+            }
+        }
+    }
+    (bad, total)
+}
+
+/// True when a body of text is dominated by case-switching words: the
+/// signature of a font whose codepoints decode to lookalikes of the intended
+/// script's letters (undecodable by definition — the visible glyphs hold the
+/// real text, so OCR is the right source).
+fn case_ratio_is_garbled(bad: usize, total: usize) -> bool {
+    total >= CASE_GARBLE_MIN_WORDS && bad as f32 >= total as f32 * CASE_GARBLE_MIN_BAD_SHARE
+}
+
 /// A font group must hold at least this share of the page's letters before its
 /// own vowel ratio can flag the page. Corruption travels with a font, so a
 /// broken map affects a substantial block of the page; requiring a real share
@@ -1675,60 +1725,102 @@ pub(crate) enum GarbledScope {
 /// while half its text is corrupt. The page-wide check is still applied first,
 /// since it catches pages whose fonts are individually too small to judge (and
 /// pages whose items carry no font name at all).
-fn garbled_scope(page: &Page) -> GarbledScope {
-    let mut total_letters = 0usize;
-    let mut total_vowels = 0usize;
-    let mut total_non_space = 0usize;
-    let mut total_symbols = 0usize;
-    let mut total_digits = 0usize;
-    let mut total_counts = [0u32; 96];
-    // Keyed by font name, so text sharing a ToUnicode map is judged together.
-    // (letters, vowels, non_space, symbols, digits, symbol_counts)
-    let mut per_font: HashMap<Option<&str>, (usize, usize, usize, usize, usize, [u32; 96])> =
-        HashMap::new();
-    for it in &page.text_items {
-        let (l, v) = count_letters_and_vowels(&it.text);
-        let (ns, sy, di, sc) = count_non_space_and_symbols(&it.text);
-        total_letters += l;
-        total_vowels += v;
-        total_non_space += ns;
-        total_symbols += sy;
-        total_digits += di;
-        for (i, c) in sc.iter().enumerate() {
-            total_counts[i] += c;
-        }
-        let entry = per_font
-            .entry(it.font_name.as_deref())
-            .or_insert((0, 0, 0, 0, 0, [0; 96]));
-        entry.0 += l;
-        entry.1 += v;
-        entry.2 += ns;
-        entry.3 += sy;
-        entry.4 += di;
-        for (i, c) in sc.iter().enumerate() {
-            entry.5[i] += c;
+/// Per-font accumulation of every garble signal's counts. Corruption travels
+/// with a font's ToUnicode map, so text sharing one is judged together.
+struct FontGarble {
+    letters: usize,
+    vowels: usize,
+    non_space: usize,
+    symbols: usize,
+    digits: usize,
+    symbol_counts: [u32; 96],
+    /// Words switching case mid-word ≥2 times — the lookalike-encoding tell.
+    bad_words: usize,
+    /// Words of ≥4 letters — the denominator of the bad-word share.
+    total_words: usize,
+}
+
+impl Default for FontGarble {
+    fn default() -> Self {
+        // `symbol_counts: [u32; 96]` keeps this off `#[derive(Default)]` —
+        // arrays only implement `Default` up to length 32.
+        Self {
+            letters: 0,
+            vowels: 0,
+            non_space: 0,
+            symbols: 0,
+            digits: 0,
+            symbol_counts: [0; 96],
+            bad_words: 0,
+            total_words: 0,
         }
     }
+}
 
-    if ratio_is_garbled(total_letters, total_vowels)
-        || symbol_ratio_is_garbled(total_symbols, total_non_space, total_digits, &total_counts)
-    {
+impl FontGarble {
+    fn add(&mut self, text: &str) {
+        let (l, v) = count_letters_and_vowels(text);
+        let (ns, sy, di, sc) = count_non_space_and_symbols(text);
+        let (bad, words) = count_case_transition_words(text);
+        self.letters += l;
+        self.vowels += v;
+        self.non_space += ns;
+        self.symbols += sy;
+        self.digits += di;
+        for (i, c) in sc.iter().enumerate() {
+            self.symbol_counts[i] += c;
+        }
+        self.bad_words += bad;
+        self.total_words += words;
+    }
+
+    /// Whether this body of text is garbled by any of the three detectors:
+    /// collapsed vowel ratio, cipher symbol density, or lookalike
+    /// case-alternation.
+    fn is_garbled(&self) -> bool {
+        ratio_is_garbled(self.letters, self.vowels)
+            || symbol_ratio_is_garbled(
+                self.symbols,
+                self.non_space,
+                self.digits,
+                &self.symbol_counts,
+            )
+            || case_ratio_is_garbled(self.bad_words, self.total_words)
+    }
+}
+
+fn garbled_scope(page: &Page) -> GarbledScope {
+    let mut totals = FontGarble::default();
+    // Keyed by font name, so text sharing a ToUnicode map is judged together.
+    let mut per_font: HashMap<Option<&str>, FontGarble> = HashMap::new();
+    for it in &page.text_items {
+        totals.add(&it.text);
+        per_font
+            .entry(it.font_name.as_deref())
+            .or_default()
+            .add(&it.text);
+    }
+
+    if totals.is_garbled() {
         return GarbledScope::WholePage;
     }
 
-    let min_letter_share = (total_letters as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
+    let min_letter_share = (totals.letters as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
     // A symbol-swamped font has almost no letters, so it can never reach a
     // letters-based share floor — judge its share on non-space chars instead.
-    let min_non_space_share = (total_non_space as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
+    // The same floor on judged words keeps a stray interCap label font from
+    // flagging the page.
+    let min_non_space_share = (totals.non_space as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
+    let min_word_share = (totals.total_words as f32 * GARBLE_MIN_FONT_SHARE).ceil() as usize;
     let fonts: HashSet<Option<String>> = per_font
         .into_iter()
-        .filter(
-            |&(_, (letters, vowels, non_space, symbols, digits, counts))| {
-                (letters >= min_letter_share && ratio_is_garbled(letters, vowels))
-                    || (non_space >= min_non_space_share
-                        && symbol_ratio_is_garbled(symbols, non_space, digits, &counts))
-            },
-        )
+        .filter(|&(_, ref g)| {
+            (g.letters >= min_letter_share && ratio_is_garbled(g.letters, g.vowels))
+                || (g.non_space >= min_non_space_share
+                    && symbol_ratio_is_garbled(g.symbols, g.non_space, g.digits, &g.symbol_counts))
+                || (g.total_words >= min_word_share
+                    && case_ratio_is_garbled(g.bad_words, g.total_words))
+        })
         .map(|(font, _)| font.map(str::to_string))
         .collect();
 
@@ -2785,6 +2877,64 @@ mod tests {
         assert!(!is_likely_garbled("$(1,234.5)"));
         // Ordinary punctuated prose is not judged.
         assert!(!is_likely_garbled("Wait — really? (Yes.) Ok, fine: go."));
+    }
+
+    /// Lookalike-encoded text — an OCR layer whose glyphs are Cyrillic but
+    /// whose codepoints are Latin lookalikes — alternates case inside most
+    /// words. Its vowel ratio and symbol density are perfectly normal, so
+    /// only the case-transition signal catches it.
+    const CASE_MOJIBAKE: &[&str] = &[
+        "PEaM3UPAHETO Ha ThProBCKH KoMIuieke B 30HA",
+        "cobcrBen ce paspaborsa Ha OT MHBECTHTOPA",
+        "KOMIUIEKCa, 3a KOETO M KOMyHMKallMOHHa",
+        "PEaM3UPAHETO Ha B MapueI cenreMBpH",
+        "KPBCTOBHMIIETO, 3a M OCHI'y Ca B",
+    ];
+
+    #[test]
+    fn test_garbled_scope_case_mojibake() {
+        let items: Vec<(&str, &str)> = CASE_MOJIBAKE
+            .iter()
+            .map(|t| ("HiddenHorzOCR", *t))
+            .collect();
+        let page = make_font_page(&items);
+        match garbled_scope(&page) {
+            GarbledScope::WholePage | GarbledScope::Fonts(_) => {}
+            _ => panic!("expected case mojibake to flag the page"),
+        }
+        assert!(page_is_garbled(&page));
+    }
+
+    /// Prose sprinkled with interCap names stays clean: two-hump words are
+    /// rare enough to never reach the bad-word share on a real page.
+    #[test]
+    fn test_garbled_scope_intercap_names_not_garbled() {
+        let items: Vec<(&str, &str)> = HEALTHY_PARAGRAPH
+            .iter()
+            .map(|t| ("Helvetica", *t))
+            .chain(std::iter::once((
+                "Helvetica",
+                "YouTube and MacBook Pro reviews on iTunes.",
+            )))
+            .collect();
+        let page = make_font_page(&items);
+        assert!(matches!(garbled_scope(&page), GarbledScope::None));
+        for it in &page.text_items {
+            assert!(!is_unusable_native(it), "{}", it.text);
+        }
+    }
+
+    /// A small corrupt font can't flag the whole page — its judged words are
+    /// under the font-share floor.
+    #[test]
+    fn test_garbled_scope_case_mojibake_small_font_ignored() {
+        let mut items: Vec<(&str, &str)> = HEALTHY_PARAGRAPH
+            .iter()
+            .map(|t| ("Helvetica", *t))
+            .collect();
+        items.extend_from_slice(&[("SmallFont", "cobcrBen"), ("SmallFont", "peaju3upaHe")]);
+        let page = make_font_page(&items);
+        assert!(matches!(garbled_scope(&page), GarbledScope::None));
     }
 
     /// Items with no font name still fall back to the page-wide verdict.

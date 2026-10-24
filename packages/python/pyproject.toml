@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "liteparse"
-version = "2.16.0+hebbia.5"
+version = "2.16.0+hebbia.6"
 description = "Python bindings for LiteParse - fast, lightweight PDF and document parsing"
 readme = "README.md"
 license = "Apache-2.0"

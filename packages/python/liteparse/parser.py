@@ -503,6 +503,7 @@ class LiteParse:
         page_orientation_corrections: Optional[List[Tuple[int, int]]] = None,
         include_complexity: Optional[bool] = None,
         extract_vector_graphics: Optional[bool] = None,
+        ocr_engine: Optional[Any] = None,
         pool_size: Optional[int] = None,
         parse_timeout: Optional[float] = None,
     ):
@@ -592,6 +593,21 @@ class LiteParse:
                 pass.
             extract_vector_graphics: Expose page-scoped vector shapes and
                 merged horizontal/vertical line segments. Default False.
+            ocr_engine: A custom OCR engine — any callable (or object with a
+                ``recognize`` method) accepting
+                ``(data: bytes, width: int, height: int, channels: int,
+                dpi: float, language: str)`` and returning an iterable of
+                ``{"text": str, "bbox": [x1, y1, x2, y2], "confidence":
+                float, "polygon": [[x, y], ...]}`` dicts (``confidence`` and
+                ``polygon`` optional; plain
+                ``(text, bbox[, confidence[, polygon]])`` tuples also work).
+                ``data`` is tightly packed pixels in row order: 1 byte/px
+                luma when ``channels`` is 1, interleaved RGB when 3. Results
+                merge into the page's text runs exactly like the built-in
+                engines' output. Optional ``name`` and
+                ``prefers_grayscale`` attributes on the object set the engine
+                name and request 1-channel rasters. Passing an engine implies
+                ``ocr_enabled=True`` unless explicitly overridden.
             pool_size: Route :meth:`parse` through a pool of this many
                 persistent worker processes instead of parsing in-process.
                 Call :meth:`close` (or use ``with``) to shut workers down.
@@ -678,6 +694,13 @@ class LiteParse:
             kwargs["include_complexity"] = include_complexity
         if extract_vector_graphics is not None:
             kwargs["extract_vector_graphics"] = extract_vector_graphics
+        if ocr_engine is not None:
+            if pool_size is not None:
+                raise ValueError(
+                    "ocr_engine is a Python callable and cannot cross into "
+                    "worker processes; it is incompatible with pool_size"
+                )
+            kwargs["ocr_engine"] = ocr_engine
 
         self._native = _NativeLiteParse(**kwargs)
 

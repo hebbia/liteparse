@@ -9,6 +9,7 @@ use liteparse::config::{
 use liteparse::types::PdfInput;
 
 mod cli;
+mod py_ocr;
 
 fn parse_output_format(value: &str) -> PyResult<OutputFormat> {
     match value {
@@ -1533,8 +1534,10 @@ impl LiteParse {
         include_complexity = None,
         extract_vector_graphics = None,
         table_format = None,
+        ocr_engine = None,
     ))]
     fn new(
+        py: Python<'_>,
         ocr_language: Option<String>,
         ocr_enabled: Option<bool>,
         ocr_server_url: Option<String>,
@@ -1575,6 +1578,7 @@ impl LiteParse {
         include_complexity: Option<bool>,
         extract_vector_graphics: Option<bool>,
         table_format: Option<String>,
+        ocr_engine: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         let mut cfg = LiteParseConfig::default();
         if let Some(v) = ocr_language {
@@ -1710,7 +1714,15 @@ impl LiteParse {
             cfg.table_format = parse_table_format(&v)?;
         }
 
-        let inner = liteparse::parser::LiteParse::new(cfg.clone());
+        // A supplied engine implies OCR is wanted unless it was explicitly
+        // switched off — `ocr_enabled` already took precedence above if set.
+        if ocr_engine.is_some() && ocr_enabled.is_none() {
+            cfg.ocr_enabled = true;
+        }
+        let mut inner = liteparse::parser::LiteParse::new(cfg.clone());
+        if let Some(engine) = ocr_engine {
+            inner = inner.with_ocr_engine(py_ocr::wrap(engine, py)?);
+        }
         let runtime = std::sync::Arc::new(
             tokio::runtime::Runtime::new()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,

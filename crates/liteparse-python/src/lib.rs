@@ -1321,6 +1321,8 @@ struct PyLiteParseConfig {
     extract_vector_graphics: bool,
     #[pyo3(get)]
     table_format: String,
+    #[pyo3(get)]
+    emit_dropped_runs: bool,
 }
 
 #[pymethods]
@@ -1398,6 +1400,7 @@ impl PyLiteParseConfig {
                 TableFormat::Markdown => "markdown".to_string(),
                 TableFormat::Html => "html".to_string(),
             },
+            emit_dropped_runs: cfg.emit_dropped_runs,
         }
     }
 }
@@ -1533,6 +1536,7 @@ impl LiteParse {
         include_complexity = None,
         extract_vector_graphics = None,
         table_format = None,
+        emit_dropped_runs = None,
     ))]
     fn new(
         ocr_language: Option<String>,
@@ -1575,6 +1579,7 @@ impl LiteParse {
         include_complexity: Option<bool>,
         extract_vector_graphics: Option<bool>,
         table_format: Option<String>,
+        emit_dropped_runs: Option<bool>,
     ) -> PyResult<Self> {
         let mut cfg = LiteParseConfig::default();
         if let Some(v) = ocr_language {
@@ -1708,6 +1713,9 @@ impl LiteParse {
         }
         if let Some(v) = table_format {
             cfg.table_format = parse_table_format(&v)?;
+        }
+        if let Some(v) = emit_dropped_runs {
+            cfg.emit_dropped_runs = v;
         }
 
         let inner = liteparse::parser::LiteParse::new(cfg.clone());

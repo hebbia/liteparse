@@ -155,6 +155,14 @@ pub struct LiteParseConfig {
     /// for consumers whose pipeline handles HTML better than pipe syntax.
     #[serde(default)]
     pub table_format: TableFormat,
+    /// Audit each page's rendered markdown against its extracted text runs
+    /// and append any run the structured emission dropped (reading order;
+    /// runs inside a table bbox are grouped under a
+    /// `liteparse:reconciled-table` marker). Default on: guarantees no
+    /// extracted run silently vanishes while keeping structured output
+    /// wherever it worked. Disable for benchmark parity with emitters that
+    /// never reconcile.
+    pub emit_dropped_runs: bool,
     /// Restrict output to a sub-region of every page. Each field is the
     /// fraction of the page to crop away from that side (e.g. `left = 0.5`,
     /// discards the left half). A text item is kept only when it lies
@@ -345,6 +353,7 @@ impl Default for LiteParseConfig {
             emit_word_boxes: false,
             ocr_keep_figure_text: false,
             table_format: TableFormat::Markdown,
+            emit_dropped_runs: true,
             extract_text_metadata: false,
             crop_box: None,
             skip_diagonal_text: false,

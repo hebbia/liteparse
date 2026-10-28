@@ -492,6 +492,9 @@ class LiteParseConfig:
     #: How tables render in markdown output: ``"markdown"`` for GFM pipe
     #: tables, ``"html"`` for ``<table>`` markup.
     table_format: str = "markdown"
+    #: Append extracted text runs the structured emission dropped to each
+    #: page's markdown.
+    emit_dropped_runs: bool = True
     #: Keep running headers/footers in markdown output instead of stripping
     #: repeated page-band lines and page chrome.
     keep_headers_footers: bool = False

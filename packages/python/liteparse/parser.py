@@ -505,6 +505,7 @@ class LiteParse:
         include_complexity: Optional[bool] = None,
         extract_vector_graphics: Optional[bool] = None,
         table_format: Optional[str] = None,
+        emit_dropped_runs: Optional[bool] = None,
         pool_size: Optional[int] = None,
         parse_timeout: Optional[float] = None,
     ):
@@ -602,6 +603,11 @@ class LiteParse:
                 ``"markdown"`` (default) for GFM pipe tables — merged tables
                 still fall back to HTML when their spans don't fit pipes —
                 or ``"html"`` for ``<table>`` markup on every table.
+            emit_dropped_runs: Audit each page's rendered markdown against
+                its extracted text runs and append any run the structured
+                emission dropped (reading order; runs inside a table bbox
+                are grouped under a ``liteparse:reconciled-table`` marker).
+                Default True.
             pool_size: Route :meth:`parse` through a pool of this many
                 persistent worker processes instead of parsing in-process.
                 Call :meth:`close` (or use ``with``) to shut workers down.
@@ -692,6 +698,8 @@ class LiteParse:
             kwargs["extract_vector_graphics"] = extract_vector_graphics
         if table_format is not None:
             kwargs["table_format"] = table_format
+        if emit_dropped_runs is not None:
+            kwargs["emit_dropped_runs"] = emit_dropped_runs
 
         self._native = _NativeLiteParse(**kwargs)
 
@@ -1009,6 +1017,7 @@ class LiteParse:
             extract_images=cfg.extract_images,
             extract_vector_graphics=cfg.extract_vector_graphics,
             table_format=cfg.table_format,
+            emit_dropped_runs=cfg.emit_dropped_runs,
             extract_xfa_packets=cfg.extract_xfa_packets,
             extract_document_metadata=cfg.extract_document_metadata,
             extract_content_bounds=cfg.extract_content_bounds,

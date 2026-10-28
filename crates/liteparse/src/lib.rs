@@ -62,4 +62,6 @@ pub mod output;
 #[doc(hidden)]
 pub mod projection;
 #[doc(hidden)]
+pub mod reconcile;
+#[doc(hidden)]
 pub mod render;

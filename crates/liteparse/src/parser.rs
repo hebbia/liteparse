@@ -225,11 +225,19 @@ fn apply_layout(
             ));
         }
         if wants_markdown {
-            page_md.push(stages::render_page_markdown(
+            let mut md = stages::render_page_markdown(
                 page,
                 blocks.as_deref(),
                 config.table_format,
-            ));
+            );
+            if config.emit_dropped_runs {
+                md.push_str(&crate::reconcile::reconcile_page_markdown(
+                    page,
+                    &md,
+                    blocks.as_deref(),
+                ));
+            }
+            page_md.push(md);
         }
     }
     if !wants_markdown {
@@ -1026,7 +1034,15 @@ impl LiteParse {
         let mut parsed_pages = stages::project(pages);
         for ((page, blocks), stats) in parsed_pages.iter_mut().zip(&page_blocks).zip(page_stats) {
             if markdown_out {
-                page.markdown = stages::render_blocks_with(blocks, self.config.table_format);
+                let mut md = stages::render_blocks_with(blocks, self.config.table_format);
+                if self.config.emit_dropped_runs {
+                    md.push_str(&crate::reconcile::reconcile_page_markdown(
+                        page,
+                        &md,
+                        Some(blocks),
+                    ));
+                }
+                page.markdown = md;
             }
             if self.config.extract_blocks {
                 page.blocks = Some(stages::layout_blocks(page, blocks));
